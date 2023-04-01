@@ -1,1 +1,1 @@
-# Link-Prediction
+# HyLa Link Prediction
