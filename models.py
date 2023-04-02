@@ -6,6 +6,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 import math
 import numpy as np
 from .hyla_utils import PoissonKernel, sample_boundary, measure_tensor_size
+import dgl
 
 
 class HyLa(nn.Module):
@@ -19,6 +20,8 @@ class HyLa(nn.Module):
         self.boundary = nn.Parameter(sample_boundary(
             HyLa_fdim, self.dim, cls='RandomUniform'))
         self.bias = 2 * np.pi * torch.rand(HyLa_fdim)
+        # self.fc1 = nn.Linear(HyLa_fdim, 1)
+        # self.fc2 = nn.Linear(HyLa_fdim, 1)
 
     def forward(self):
         with torch.no_grad():
@@ -29,6 +32,10 @@ class HyLa(nn.Module):
         angles = self.Lambdas.to(e_all.device)/2.0 * torch.log(PsK)
         eigs = torch.cos(angles + self.bias.to(e_all.device)
                          ) * torch.sqrt(PsK)**(self.dim-1)
+        # eigs = eigs.view(-1, 1)
+        # eigs1 = self.fc1(eigs)
+        # eigs2 = self.fc2(eigs)
+        # return eigs1, eigs2
         return eigs
 
     def optim_params(self):
@@ -69,43 +76,63 @@ class RFF(nn.Module):
             'ptransp': self.manifold.ptransp,
         }]
 
+from dgl.nn import SAGEConv
 
-class SGC(nn.Module):
-    """
-    A Simple PyTorch Implementation of Logistic Regression.
-    Assuming the features have been preprocessed with k-step graph propagation.
-    """
+class GraphSAGE(nn.Module):
+    def __init__(self, in_feats, h_feats):
+        super(GraphSAGE, self).__init__()
+        self.conv1 = SAGEConv(in_feats, h_feats, 'mean')
+        self.conv2 = SAGEConv(h_feats, h_feats, 'mean')
+    
+    def forward(self, g, in_feat):
+        h = self.conv1(g, in_feat)
+        h = F.relu(h)
+        h = self.conv2(g, h)
+        return h
+    
+import dgl.function as fn
 
-    def __init__(self, nfeat, nclass):
-        super(SGC, self).__init__()
+class DotPredictor(nn.Module):
+    def forward(self, g, h):
+        with g.local_scope():
+            g.ndata['h'] = h
+            # Compute a new edge feature named 'score' by a dot-product between the
+            # source node feature 'h' and destination node feature 'h'.
+            g.apply_edges(fn.u_dot_v('h', 'h', 'score'))
+            # u_dot_v returns a 1-element vector for each edge so you need to squeeze it.
+            return g.edata['score'][:, 0]
 
-        self.W = nn.Linear(nfeat, nclass)
+class MLPPredictor(nn.Module):
+    def __init__(self, h_feats):
+        super().__init__()
+        self.W1 = nn.Linear(h_feats * 2, h_feats)
+        self.W2 = nn.Linear(h_feats, 1)
 
-    def forward(self, x):
-        return self.W(x)
+    def apply_edges(self, edges):
+        """
+        Computes a scalar score for each edge of the given graph.
 
+        Parameters
+        ----------
+        edges :
+            Has three members ``src``, ``dst`` and ``data``, each of
+            which is a dictionary representing the features of the
+            source nodes, the destination nodes, and the edges
+            themselves.
+
+        Returns
+        -------
+        dict
+            A dictionary of new edge features.
+        """
+        h = torch.cat([edges.src['h'], edges.dst['h']], 1)
+        return {'score': self.W2(F.relu(self.W1(h))).squeeze(1)}
+
+    def forward(self, g, h):
+        with g.local_scope():
+            g.ndata['h'] = h
+            g.apply_edges(self.apply_edges)
+            return g.edata['score']
+        
 # given 2 nodes, find probability of a link between them by computing corresponding hyla features (eigs1, eigs2)
 # use binary cross entropy loss to maximize link likelihood <eigs1, eigs2> --> 1 and minimize link likelihood <eigs1, eigs2>--> 0
-
-class LP(nn.Module):
-    """
-    Base model for link prediction task.
-    """
-
-    def __init__(self, r, t, nb_false_edges, nb_edges):
-        super(LP, self).__init__()
-        self.dc = FermiDiracDecoder(r=1, t=1)
-        self.nb_false_edges = nb_false_edges
-        self.nb_edges = nb_edges
- 
-class FermiDiracDecoder(Module):
-    """Fermi Dirac to compute edge probabilities based on distances."""
-
-    def __init__(self, r, t):
-        super(FermiDiracDecoder, self).__init__()
-        self.r = r
-        self.t = t
-
-    def forward(self, dist):
-        probs = 1. / (torch.exp((dist - self.r) / self.t) + 1.0)
-        return probs

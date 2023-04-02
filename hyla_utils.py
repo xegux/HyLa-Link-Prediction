@@ -113,13 +113,13 @@ def load_data(args, datapath):
     data = load_data_lp(args.dataset, args.use_feats, datapath)
     adj = data['adj_train']
     adj_train, train_edges, train_edges_false, val_edges, val_edges_false, test_edges, test_edges_false = mask_edges(
-            adj, args.val_prop, args.test_prop, args.split_seed)
+            adj, 0.15, 0.15, args.split_seed)
     data['adj_train'] = adj_train
     data['train_edges'], data['train_edges_false'] = train_edges, train_edges_false
     data['val_edges'], data['val_edges_false'] = val_edges, val_edges_false
     data['test_edges'], data['test_edges_false'] = test_edges, test_edges_false
     data['adj_train_norm'], data['features'] = process(
-            data['adj_train'], data['features'], args.normalize_adj, args.normalize_feats
+            data['adj_train'], data['features'], True, True
     )
     if args.dataset == 'airport':
         data['features'] = augment(data['adj_train'], data['features'])
